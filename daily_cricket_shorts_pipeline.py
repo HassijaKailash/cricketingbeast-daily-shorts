@@ -41,16 +41,16 @@ def generate_plan(excluded):
     raise RuntimeError("No compatible Gemini model succeeded")
 
 async def _tts(text, path):
-    try:
-        import edge_tts
-        await edge_tts.Communicate(text=text, voice="en-IN-PrabhatNeural".save(str(path))
-         if path.exists() and path.stat().st_size > 500:
-            return
+    import edge_tts
+    clean_text = text.replace("—", ", ").replace('"', "").strip() or "Cricket record."
+    for voice in ["en-IN-PrabhatNeural", "en-US-GuyNeural", "en-GB-RyanNeural"]:
+        try:
+            await edge_tts.Communicate(text=clean_text, voice=voice).save(str(path))
+            if path.exists() and path.stat().st_size > 200:
+                return
         except Exception as e:
-        print(f"edge-tts fallback ({e}), using gTTS...")
-    subprocess.run(["pip", "install", "-q", "gTTS"], check=True)
-    from gtts import gTTS
-    gTTS(text=text, lang="en", tld="co.in").save(str(path))
+            print(f"TTS retry ({voice}): {e}")
+    subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono", "-t", "5", str(path)], check=True)
 
 
 def render_short(plan, out_mp4):
