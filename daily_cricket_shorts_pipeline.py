@@ -24,7 +24,7 @@ def generate_plan(excluded):
     from google import genai
     from google.genai import types
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-    candidates = [m.name for m in client.models.list() if "gemini" in m.name.lower() and not any(x in m.name.lower() for x in ["embedding", "imagen", "veo", "tts", "audio", "vision"])]
+    candidates = ["models/gemini-3.1-flash-lite"] + [m.name for m in client.models.list() if "gemini" in m.name.lower() and not any(x in m.name.lower() for x in ["embedding", "imagen", "veo", "tts", "audio", "vision"])]
     for model_name in candidates:
         try:
             print(f"Trying model: {model_name}")
@@ -41,8 +41,17 @@ def generate_plan(excluded):
     raise RuntimeError("No compatible Gemini model succeeded")
 
 async def _tts(text, path):
-    import edge_tts
-    await edge_tts.Communicate(text=text, voice="en-IN-PrabhatNeural", rate="+8%").save(str(path))
+    try:
+        import edge_tts
+        await edge_tts.Communicate(text=text, voice="en-IN-PrabhatNeural".save(str(path))
+         if path.exists() and path.stat().st_size > 500:
+            return
+        except Exception as e:
+        print(f"edge-tts fallback ({e}), using gTTS...")
+    subprocess.run(["pip", "install", "-q", "gTTS"], check=True)
+    from gtts import gTTS
+    gTTS(text=text, lang="en", tld="co.in").save(str(path))
+
 
 def render_short(plan, out_mp4):
     OUT.mkdir(exist_ok=True)
@@ -84,6 +93,7 @@ def upload(mp4, plan, privacy):
     req = yt.videos().insert(part="snippet,status", body=body, media_body=MediaFileUpload(str(mp4), mimetype="video/mp4", resumable=True))
     res = None
     while res is None: _, res = req.next_chunk()
+      print(f"SUCCESS_YOUTUBE_URL: https://www.youtube.com/shorts/{res['id']}")  
     return res["id"]
 
 if __name__ == "__main__":
