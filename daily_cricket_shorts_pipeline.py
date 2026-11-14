@@ -93,7 +93,7 @@ def upload(mp4, plan, privacy):
     req = yt.videos().insert(part="snippet,status", body=body, media_body=MediaFileUpload(str(mp4), mimetype="video/mp4", resumable=True))
     res = None
     while res is None: _, res = req.next_chunk()
-      print(f"SUCCESS_YOUTUBE_URL: https://www.youtube.com/shorts/{res['id']}")  
+    print(f"SUCCESS_YOUTUBE_URL: https://www.youtube.com/shorts/{res['id']}")  
     return res["id"]
 
 if __name__ == "__main__":
