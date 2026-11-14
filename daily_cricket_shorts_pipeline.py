@@ -25,7 +25,7 @@ def generate_plan(excluded):
     from google.genai import types
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
     res = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model="gemini-3.8-flash",
         contents=f"Create today's Cricket Short for {CHANNEL_HANDLE}. Exclude topics: {excluded[-40:]}.",
         config=types.GenerateContentConfig(system_instruction=PROMPT, response_mime_type="application/json", temperature=0.8),
     )
