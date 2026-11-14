@@ -24,12 +24,21 @@ def generate_plan(excluded):
     from google import genai
     from google.genai import types
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-    res = client.models.generate_content(
-        model="gemini-3.8-flash",
-        contents=f"Create today's Cricket Short for {CHANNEL_HANDLE}. Exclude topics: {excluded[-40:]}.",
-        config=types.GenerateContentConfig(system_instruction=PROMPT, response_mime_type="application/json", temperature=0.8),
-    )
-    return json.loads(res.text)
+    candidates = [m.name for m in client.models.list() if "gemini" in m.name.lower() and not any(x in m.name.lower() for x in ["embedding", "imagen", "veo", "tts", "audio", "vision"])]
+    for model_name in candidates:
+        try:
+            print(f"Trying model: {model_name}")
+            res = client.models.generate_content(
+                model=model_name,
+                contents=f"Create today's Cricket Short for {CHANNEL_HANDLE}. Exclude topics: {excluded[-40:]}.",
+                config=types.GenerateContentConfig(system_instruction=PROMPT, response_mime_type="application/json", temperature=0.8),
+            )
+            plan = json.loads(res.text)
+            if "beats" in plan and "title" in plan:
+                return plan
+        except Exception as e:
+            print(f"Skipping {model_name}: {e}")
+    raise RuntimeError("No compatible Gemini model succeeded")
 
 async def _tts(text, path):
     import edge_tts
