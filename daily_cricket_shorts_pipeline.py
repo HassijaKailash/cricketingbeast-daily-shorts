@@ -1,18 +1,31 @@
-import argparse, asyncio, datetime, json, os, subprocess, textwrap
+import argparse, asyncio, datetime, io, json, os, subprocess, time, urllib.parse, urllib.request
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageEnhance
 
 CHANNEL_HANDLE = "@CricketingBeastHK"
 HISTORY_FILE = Path("published_history.json")
 OUT = Path("build_output")
 
-PROMPT = """You are the scriptwriter for YouTube Shorts channel CricketingBeast (@CricketingBeastHK).
-Create a 45-second high-retention 5-beat cricket Short (hook, setup, rapid stat escalation, climax reveal, debate question that loops back into Beat 1).
+PROMPT = """You are the documentary scriptwriter and visual director for the YouTube Shorts channel CricketingBeast (@CricketingBeastHK), modeled on "Why Australia Still Hates These 2 Legends 🤔😤🇦🇺".
+Write a gripping 7-scene cricket documentary Short (70-85 seconds total) about an iconic cricket comeback, rivalry, or untold match story:
+Scene 1: The Intimidating Opponent / Impossible Odds
+Scene 2: The Collapse / Humiliation
+Scene 3: The Captain's Gamble or Turning Point
+Scene 4: The Opponent's Arrogance / Premature Celebration
+Scene 5: Pure Defiance & Grit on the Pitch
+Scene 6: Breaking the World-Class Attack
+Scene 7: The Historic Finale & Immortal Legacy
+For EVERY scene provide:
+- narration: 2-3 dramatic documentary sentences for a deep narrator.
+- image_prompts: EXACTLY 2 hyper-detailed 9:16 photorealistic image prompts per scene (14 images total, changing every ~5 seconds), alternating between stadium/player shots and symbolic close-ups (lone helmet in dark locker room, vintage newspaper headline, stadium scoreboard, untouched champagne on ice, red ball shattering wooden stumps, fans waving flags in golden sunlight). End each prompt with "8K photorealistic, 70mm film grain, dramatic lighting, vertical 9:16".
 Return STRICT JSON:
-{"topic_id":"slug","title":"Title under 65 chars #Shorts #Cricket","description":"SEO summary + question + #Cricket #Shorts","tags":["cricket","cricketshorts","cricketingbeast"],"category_id":"17","beats":[{"beat_number":1,"phase_label":"HOOK","headline_stat":"BIG STAT","sub_stat":"MATCH • YEAR","narration":"Spoken line","accent_hex":"#FF9933"}]}"""
+{"topic_id":"slug","title":"High-CTR Title under 70 chars 🤔🔥🇮🇳 #Shorts","description":"3-paragraph story summary + 10 hashtags (#IndianCricket #CricketHistory #TestCricket #TeamIndia #CricketingBeast)","tags":["cricket","cricketshorts","indiancricket","cricketingbeast","cricketlegends"],"category_id":"17","scenes":[{"scene_number":1,"narration":"Spoken line","image_prompts":["Prompt 1","Prompt 2"]}]}"""
 
 def load_history():
-    return json.loads(HISTORY_FILE.read_text()).get("published_topics", []) if HISTORY_FILE.exists() else []
+    if HISTORY_FILE.exists():
+        try: return json.loads(HISTORY_FILE.read_text()).get("published_topics", [])
+        except Exception: pass
+    return ["eden-gardens-2001-laxman-dravid-kolkata-test"]
 
 def save_history(topic_id, title, video_id):
     h = json.loads(HISTORY_FILE.read_text()) if HISTORY_FILE.exists() else {"published_topics": [], "runs": []}
@@ -24,64 +37,83 @@ def generate_plan(excluded):
     from google import genai
     from google.genai import types
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-    candidates = ["models/gemini-3.1-flash-lite"] + [m.name for m in client.models.list() if "gemini" in m.name.lower() and not any(x in m.name.lower() for x in ["embedding", "imagen", "veo", "tts", "audio", "vision"])]
+    all_ex = list(set(excluded + ["eden-gardens-2001-laxman-dravid-kolkata-test"]))
+    candidates = ["models/gemini-3.1-flash-lite"] + [m.name for m in client.models.list() if "gemini" in m.name.lower() and not any(x in m.name.lower() for x in ["embedding", "imagen", "veo", "tts", "audio", "vision", "image"])]
     for model_name in candidates:
         try:
-            print(f"Trying model: {model_name}")
             res = client.models.generate_content(
                 model=model_name,
-                contents=f"Create today's Cricket Short for {CHANNEL_HANDLE}. Exclude topics: {excluded[-40:]}.",
-                config=types.GenerateContentConfig(system_instruction=PROMPT, response_mime_type="application/json", temperature=0.8),
+                contents=f"Create today's 7-scene Cricket Documentary Short for {CHANNEL_HANDLE}. Exclude: {all_ex[-40:]}.",
+                config=types.GenerateContentConfig(system_instruction=PROMPT, response_mime_type="application/json", temperature=0.85),
             )
             plan = json.loads(res.text)
-            if "beats" in plan and "title" in plan:
-                return plan
+            if "scenes" in plan and len(plan["scenes"]) >= 5: return plan
         except Exception as e:
             print(f"Skipping {model_name}: {e}")
     raise RuntimeError("No compatible Gemini model succeeded")
 
+def generate_image(prompt, out_png, seed):
+    try:
+        from google import genai
+        from google.genai import types
+        client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+        res = client.models.generate_images(model="imagen-3.0-generate-002", prompt=prompt, config=types.GenerateImagesConfig(number_of_images=1, aspect_ratio="9:16", output_mime_type="image/jpeg"))
+        if res.generated_images:
+            img = Image.open(io.BytesIO(res.generated_images[0].image.image_bytes)).convert("RGB").resize((1080, 1920), Image.Resampling.LANCZOS)
+            img.save(out_png, "PNG"); return
+    except Exception: pass
+    enc = urllib.parse.quote(prompt)
+    for model in ["flux", "turbo"]:
+        for att in range(3):
+            url = f"https://image.pollinations.ai/prompt/{enc}?width=1080&height=1920&seed={seed+att}&model={model}&nologo=true"
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=45) as r: data = r.read()
+                img = Image.open(io.BytesIO(data)).convert("RGB").resize((1080, 1920), Image.Resampling.LANCZOS)
+                ImageEnhance.Contrast(img).enhance(1.08).save(out_png, "PNG"); return
+            except Exception as e:
+                print(f"Img retry ({model}): {e}"); time.sleep(2)
+    Image.new("RGB", (1080, 1920), (14, 20, 32)).save(out_png, "PNG")
+
 async def _tts(text, path):
     import edge_tts
-    clean_text = text.replace("—", ", ").replace('"', "").strip() or "Cricket record."
-    for voice in ["en-IN-PrabhatNeural", "en-US-GuyNeural", "en-GB-RyanNeural"]:
+    clean = text.replace("—", "... ").replace('"', "").strip() or "Cricket history."
+    for voice in ["en-IN-PrabhatNeural", "en-US-ChristopherNeural", "en-GB-RyanNeural"]:
         try:
-            await edge_tts.Communicate(text=clean_text, voice=voice).save(str(path))
-            if path.exists() and path.stat().st_size > 200:
-                return
+            await edge_tts.Communicate(text=clean, voice=voice, rate="-4%").save(str(path))
+            if path.exists() and path.stat().st_size > 400: return
         except Exception as e:
-            print(f"TTS retry ({voice}): {e}")
-    subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono", "-t", "5", str(path)], check=True)
+            print(f"TTS retry ({voice}): {e}"); time.sleep(1)
+    from gtts import gTTS
+    gTTS(text=clean, lang="en", tld="co.in").save(str(path))
 
+def get_dur(p):
+    pr = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(p)], capture_output=True, text=True, check=True)
+    return max(float(pr.stdout.strip()), 4.0)
 
 def render_short(plan, out_mp4):
     OUT.mkdir(exist_ok=True)
-    f_b = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 36)
-    f_h = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 82)
-    f_n = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 46)
-    segs = []
-    for i, b in enumerate(plan["beats"], 1):
-        img_p, aud_p, seg_p = OUT / f"b{i}.png", OUT / f"b{i}.mp3", OUT / f"s{i}.mp4"
-        asyncio.run(_tts(b["narration"], aud_p))
-        img = Image.new("RGB", (1080, 1920), (12, 18, 34))
-        d = ImageDraw.Draw(img)
-        d.rounded_rectangle([60, 80, 1020, 175], radius=24, fill=(22, 32, 58), outline=(255, 153, 51), width=4)
-        d.text((95, 108), f"CRICKETING BEAST • {CHANNEL_HANDLE}", fill=(255, 255, 255), font=f_b)
-        d.rounded_rectangle([60, 260, 1020, 960], radius=36, fill=(18, 26, 48), outline=(255, 153, 51), width=5)
-        d.text((100, 310), b.get("phase_label", f"BEAT {i}").upper(), fill=(255, 153, 51), font=f_b)
-        y = 410
-        for line in textwrap.wrap(b["headline_stat"].upper(), 14)[:3]:
-            d.text((100, y), line, fill=(255, 255, 255), font=f_h); y += 100
-        d.text((100, 830), b.get("sub_stat", "").upper()[:34], fill=(0, 229, 255), font=f_b)
-        d.rounded_rectangle([60, 1020, 1020, 1640], radius=32, fill=(24, 36, 64), outline=(80, 105, 155), width=3)
-        yn = 1080
-        for line in textwrap.wrap(b["narration"], 28)[:7]:
-            d.text((100, yn), line, fill=(245, 247, 252), font=f_n); yn += 68
-        img.save(img_p)
-        subprocess.run(["ffmpeg", "-y", "-loop", "1", "-i", str(img_p), "-i", str(aud_p), "-c:v", "libx264", "-tune", "stillimage", "-r", "30", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(seg_p)], check=True)
-        segs.append(seg_p)
-    lst = OUT / "list.txt"
-    lst.write_text("\n".join(f"file '{s.resolve()}'" for s in segs))
-    subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(lst), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(out_mp4)], check=True)
+    segs, seed_b = [], int(time.time()) % 100000
+    for i, sc in enumerate(plan["scenes"], 1):
+        aud_p = OUT / f"sc{i}.mp3"
+        asyncio.run(_tts(sc["narration"], aud_p))
+        dur = get_dur(aud_p) + 0.35
+        prompts = sc.get("image_prompts") or [sc["narration"]]
+        subs, p_dur = [], dur / len(prompts)
+        for j, prm in enumerate(prompts, 1):
+            img_p, sub_v = OUT / f"s{i}_{j}.png", OUT / f"s{i}_{j}.mp4"
+            generate_image(prm, img_p, seed_b + i * 10 + j)
+            subprocess.run(["ffmpeg", "-y", "-loop", "1", "-i", str(img_p), "-vf", "scale=1140:2026,crop=1080:1920", "-c:v", "libx264", "-r", "30", "-pix_fmt", "yuv420p", "-t", f"{p_dur:.2f}", str(sub_v)], check=True)
+            subs.append(sub_v)
+        sl = OUT / f"sl{i}.txt"
+        sl.write_text("\n".join(f"file '{c.resolve()}'" for c in subs))
+        sv, sf = OUT / f"sv{i}.mp4", OUT / f"sf{i}.mp4"
+        subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(sl), "-c", "copy", str(sv)], check=True)
+        subprocess.run(["ffmpeg", "-y", "-i", str(sv), "-i", str(aud_p), "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", str(sf)], check=True)
+        segs.append(sf)
+    ml = OUT / "ml.txt"
+    ml.write_text("\n".join(f"file '{s.resolve()}'" for s in segs))
+    subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(ml), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(out_mp4)], check=True)
 
 def upload(mp4, plan, privacy):
     from google.oauth2.credentials import Credentials
@@ -93,20 +125,12 @@ def upload(mp4, plan, privacy):
     req = yt.videos().insert(part="snippet,status", body=body, media_body=MediaFileUpload(str(mp4), mimetype="video/mp4", resumable=True))
     res = None
     while res is None: _, res = req.next_chunk()
-    print(f"SUCCESS_YOUTUBE_URL: https://www.youtube.com/shorts/{res['id']}")  
+    print(f"SUCCESS_YOUTUBE_URL: https://www.youtube.com/shorts/{res['id']}")
     return res["id"]
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser()
-    p.add_argument("--get-refresh-token", metavar="JSON")
-    args = p.parse_args()
-    if args.get_refresh_token:
-        from google_auth_oauthlib.flow import InstalledAppFlow
-        c = InstalledAppFlow.from_client_secrets_file(args.get_refresh_token, scopes=["https://www.googleapis.com/auth/youtube.upload"]).run_local_server(port=8080, access_type="offline", prompt="consent")
-        print(f"YOUTUBE_CLIENT_ID={c.client_id}\nYOUTUBE_CLIENT_SECRET={c.client_secret}\nYOUTUBE_REFRESH_TOKEN={c.refresh_token}")
-    else:
-        plan = generate_plan(load_history())
-        mp4 = OUT / f"{plan['topic_id']}.mp4"
-        render_short(plan, mp4)
-        vid = upload(mp4, plan, os.environ.get("YOUTUBE_PRIVACY", "public"))
-        save_history(plan["topic_id"], plan["title"], vid)
+    plan = generate_plan(load_history())
+    mp4 = OUT / f"{plan['topic_id']}.mp4"
+    render_short(plan, mp4)
+    vid = upload(mp4, plan, os.environ.get("YOUTUBE_PRIVACY", "public"))
+    save_history(plan["topic_id"], plan["title"], vid)
