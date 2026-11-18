@@ -1,6 +1,6 @@
-import argparse, asyncio, datetime, io, json, os, subprocess, time, urllib.parse, urllib.request
+import argparse, asyncio, datetime, io, json, os, re, subprocess, time, urllib.parse, urllib.request
 from pathlib import Path
-from PIL import Image, ImageEnhance
+from PIL import Image, ImageEnhance, ImageOps
 
 CHANNEL_HANDLE = "@CricketingBeastHK"
 HISTORY_FILE = Path("published_history.json")
@@ -17,9 +17,10 @@ Scene 6: Breaking the World-Class Attack
 Scene 7: The Historic Finale & Immortal Legacy
 For EVERY scene provide:
 - narration: 2-3 dramatic documentary sentences for a deep narrator.
-- image_prompts: EXACTLY 2 hyper-detailed 9:16 photorealistic image prompts per scene (14 images total, changing every ~5 seconds), alternating between stadium/player shots and symbolic close-ups (lone helmet in dark locker room, vintage newspaper headline, stadium scoreboard, untouched champagne on ice, red ball shattering wooden stumps, fans waving flags in golden sunlight). End each prompt with "8K photorealistic, 70mm film grain, dramatic lighting, vertical 9:16".
+- image_prompts: EXACTLY 2 hyper-detailed 9:16 photorealistic image prompts per scene (14 images total, changing every ~5 seconds). End each prompt with "8K photorealistic, 70mm film grain, dramatic lighting, vertical 9:16".
+- search_queries: EXACTLY 2 specific real-world photo search queries matching the 2 shots (e.g. "Rishabh Pant batting Gabba 2021 Test cricket HD", "Australia cricket bowlers exhausted Test match").
 Return STRICT JSON:
-{"topic_id":"slug","title":"High-CTR Title under 70 chars 🤔🔥🇮🇳 #Shorts","description":"3-paragraph story summary + 10 hashtags (#IndianCricket #CricketHistory #TestCricket #TeamIndia #CricketingBeast)","tags":["cricket","cricketshorts","indiancricket","cricketingbeast","cricketlegends"],"category_id":"17","scenes":[{"scene_number":1,"narration":"Spoken line","image_prompts":["Prompt 1","Prompt 2"]}]}"""
+{"topic_id":"slug","title":"High-CTR Title under 70 chars 🤔🔥🇮🇳 #Shorts","description":"3-paragraph story summary + 10 hashtags (#IndianCricket #CricketHistory #TestCricket #TeamIndia #CricketingBeast)","tags":["cricket","cricketshorts","indiancricket","cricketingbeast","cricketlegends"],"category_id":"17","scenes":[{"scene_number":1,"narration":"Spoken line","image_prompts":["Prompt 1","Prompt 2"],"search_queries":["Query 1","Query 2"]}]}"""
 
 def load_history():
     if HISTORY_FILE.exists():
@@ -52,27 +53,57 @@ def generate_plan(excluded):
             print(f"Skipping {model_name}: {e}")
     raise RuntimeError("No compatible Gemini model succeeded")
 
-def generate_image(prompt, out_png, seed):
-    try:
-        from google import genai
-        from google.genai import types
-        client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-        res = client.models.generate_images(model="imagen-3.0-generate-002", prompt=prompt, config=types.GenerateImagesConfig(number_of_images=1, aspect_ratio="9:16", output_mime_type="image/jpeg"))
-        if res.generated_images:
-            img = Image.open(io.BytesIO(res.generated_images[0].image.image_bytes)).convert("RGB").resize((1080, 1920), Image.Resampling.LANCZOS)
-            img.save(out_png, "PNG"); return
-    except Exception: pass
-    enc = urllib.parse.quote(prompt)
-    for model in ["flux", "turbo"]:
-        for att in range(3):
-            url = f"https://image.pollinations.ai/prompt/{enc}?width=1080&height=1920&seed={seed+att}&model={model}&nologo=true"
-            try:
-                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(req, timeout=45) as r: data = r.read()
-                img = Image.open(io.BytesIO(data)).convert("RGB").resize((1080, 1920), Image.Resampling.LANCZOS)
-                ImageEnhance.Contrast(img).enhance(1.08).save(out_png, "PNG"); return
-            except Exception as e:
-                print(f"Img retry ({model}): {e}"); time.sleep(2)
+USED_URLS = set()
+
+def generate_image(prompt, search_query, out_png, seed):
+    from google import genai
+    from google.genai import types
+    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+    img_models = [m.name for m in client.models.list() if any(k in m.name.lower() for k in ["imagen", "image"])]
+    for im in img_models:
+        try:
+            if "imagen" in im.lower():
+                res = client.models.generate_images(model=im, prompt=prompt, config=types.GenerateImagesConfig(number_of_images=1, aspect_ratio="9:16"))
+                if res.generated_images:
+                    img = Image.open(io.BytesIO(res.generated_images[0].image.image_bytes)).convert("RGB")
+                    ImageOps.fit(img, (1080, 1920), Image.Resampling.LANCZOS).save(out_png, "PNG")
+                    print(f"Generated AI image with {im}")
+                    return
+            else:
+                res = client.models.generate_content(model=im, contents=prompt, config=types.GenerateContentConfig(response_modalities=["IMAGE"]))
+                for part in res.candidates[0].content.parts:
+                    if part.inline_data and part.inline_data.data:
+                        img = Image.open(io.BytesIO(part.inline_data.data)).convert("RGB")
+                        ImageOps.fit(img, (1080, 1920), Image.Resampling.LANCZOS).save(out_png, "PNG")
+                        print(f"Generated AI image with {im}")
+                        return
+        except Exception as e:
+            print(f"AI image model {im} skipped: {str(e)[:90]}")
+
+    for q in [search_query, f"{search_query} cricket match", "Test cricket stadium dramatic"]:
+        try:
+            url = f"https://www.bing.com/images/async?q={urllib.parse.quote(q)}&first=1&count=20&qft=+filterui:imagesize-large"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
+            html = urllib.request.urlopen(req, timeout=20).read().decode("utf-8", errors="ignore")
+            matches = re.findall(r'murl&quot;:&quot;(https?://[^&]+?\.(?:jpg|jpeg|png))&quot;', html)
+            for murl in matches:
+                if murl in USED_URLS: continue
+                try:
+                    ireq = urllib.request.Request(murl, headers={"User-Agent": "Mozilla/5.0"})
+                    data = urllib.request.urlopen(ireq, timeout=15).read()
+                    img = Image.open(io.BytesIO(data)).convert("RGB")
+                    if img.width < 400 or img.height < 400: continue
+                    USED_URLS.add(murl)
+                    fitted = ImageOps.fit(img, (1080, 1920), Image.Resampling.LANCZOS)
+                    fitted = ImageEnhance.Contrast(fitted).enhance(1.15)
+                    fitted = ImageEnhance.Color(fitted).enhance(1.1)
+                    fitted.save(out_png, "PNG")
+                    print(f"Fetched high-res cricket image for '{q}': {murl[:65]}")
+                    return
+                except Exception:
+                    continue
+        except Exception as e:
+            print(f"Search fallback error ({q}): {e}")
     Image.new("RGB", (1080, 1920), (14, 20, 32)).save(out_png, "PNG")
 
 async def _tts(text, path):
@@ -99,11 +130,15 @@ def render_short(plan, out_mp4):
         asyncio.run(_tts(sc["narration"], aud_p))
         dur = get_dur(aud_p) + 0.35
         prompts = sc.get("image_prompts") or [sc["narration"]]
+        queries = sc.get("search_queries") or prompts
         subs, p_dur = [], dur / len(prompts)
         for j, prm in enumerate(prompts, 1):
+            sq = queries[j - 1] if j - 1 < len(queries) else prm[:60]
             img_p, sub_v = OUT / f"s{i}_{j}.png", OUT / f"s{i}_{j}.mp4"
-            generate_image(prm, img_p, seed_b + i * 10 + j)
-            subprocess.run(["ffmpeg", "-y", "-loop", "1", "-i", str(img_p), "-vf", "scale=1140:2026,crop=1080:1920", "-c:v", "libx264", "-r", "30", "-pix_fmt", "yuv420p", "-t", f"{p_dur:.2f}", str(sub_v)], check=True)
+            generate_image(prm, sq, img_p, seed_b + i * 10 + j)
+            frames = max(int(p_dur * 30), 90)
+            vf = f"scale=1200:2134,zoompan=z='min(zoom+0.0005,1.08)':d={frames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1080x1920:fps=30"
+            subprocess.run(["ffmpeg", "-y", "-i", str(img_p), "-vf", vf, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-t", f"{p_dur:.2f}", str(sub_v)], check=True)
             subs.append(sub_v)
         sl = OUT / f"sl{i}.txt"
         sl.write_text("\n".join(f"file '{c.resolve()}'" for c in subs))
