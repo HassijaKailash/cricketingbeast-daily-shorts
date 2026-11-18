@@ -106,12 +106,15 @@ def generate_image(prompt, search_query, out_png, seed):
             print(f"Search fallback error ({q}): {e}")
     Image.new("RGB", (1080, 1920), (14, 20, 32)).save(out_png, "PNG")
 
-async def _tts(text, path):
+async def _tts(text, path, pitch=None, voice_only=None):
     import edge_tts
     clean = text.replace("—", "... ").replace('"', "").strip() or "Cricket history."
-    for voice in ["en-IN-PrabhatNeural", "en-US-ChristopherNeural", "en-GB-RyanNeural"]:
+    voices = [voice_only] if voice_only else ["en-IN-PrabhatNeural", "en-US-ChristopherNeural", "en-GB-RyanNeural"]
+    for voice in voices:
         try:
-            await edge_tts.Communicate(text=clean, voice=voice, rate="-4%").save(str(path))
+            kw = {"rate": "-4%"}
+            if pitch: kw["pitch"] = pitch
+            await edge_tts.Communicate(text=clean, voice=voice, **kw).save(str(path))
             if path.exists() and path.stat().st_size > 400: return
         except Exception as e:
             print(f"TTS retry ({voice}): {e}"); time.sleep(1)
@@ -124,14 +127,24 @@ def get_dur(p):
 
 def render_short(plan, out_mp4):
     OUT.mkdir(exist_ok=True)
+    is_16_9 = plan.get("aspect_ratio") == "16:9"
+    pitch = "-15Hz" if is_16_9 else None
+    voice_only = "en-IN-PrabhatNeural" if is_16_9 else None
     segs, seed_b = [], int(time.time()) % 100000
     for i, sc in enumerate(plan["scenes"], 1):
         aud_p = OUT / f"sc{i}.mp3"
-        asyncio.run(_tts(sc["narration"], aud_p))
+        asyncio.run(_tts(sc["narration"], aud_p, pitch=pitch, voice_only=voice_only))
         dur = get_dur(aud_p) + 0.35
-        prompts = sc.get("image_prompts") or [sc["narration"]]
+        subs = []
+        if "image" in sc:
+            img_p, sub_v = Path(sc["image"]), OUT / f"s{i}_1.mp4"
+            frames = max(int(dur * 30), 90)
+            vf = f"scale=2134:1200:force_original_aspect_ratio=increase,crop=2134:1200,zoompan=z='min(zoom+0.0005,1.08)':d={frames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1920x1080:fps=30" if is_16_9 else f"scale=1200:2134:force_original_aspect_ratio=increase,crop=1200:2134,zoompan=z='min(zoom+0.0005,1.08)':d={frames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1080x1920:fps=30"
+            subprocess.run(["ffmpeg", "-y", "-i", str(img_p), "-vf", vf, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-t", f"{dur:.2f}", str(sub_v)], check=True)
+            subs.append(sub_v)
+        prompts = [] if "image" in sc else (sc.get("image_prompts") or [sc["narration"]])
         queries = sc.get("search_queries") or prompts
-        subs, p_dur = [], dur / len(prompts)
+        p_dur = dur / max(len(prompts), 1)
         for j, prm in enumerate(prompts, 1):
             sq = queries[j - 1] if j - 1 < len(queries) else prm[:60]
             img_p, sub_v = OUT / f"s{i}_{j}.png", OUT / f"s{i}_{j}.mp4"
@@ -164,7 +177,13 @@ def upload(mp4, plan, privacy):
     return res["id"]
 
 if __name__ == "__main__":
-    plan = generate_plan(load_history())
+    history = load_history()
+    plan_file = Path("yuvraj_2007_plan.json")
+    if plan_file.exists():
+        custom_plan = json.loads(plan_file.read_text(encoding="utf-8"))
+        plan = custom_plan if custom_plan.get("topic_id") not in history else generate_plan(history)
+    else:
+        plan = generate_plan(history)
     mp4 = OUT / f"{plan['topic_id']}.mp4"
     render_short(plan, mp4)
     vid = upload(mp4, plan, os.environ.get("YOUTUBE_PRIVACY", "public"))
